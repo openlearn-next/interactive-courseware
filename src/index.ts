@@ -104,7 +104,7 @@ export default {
   manifest: {
     id: 'openlearn-plugin-interactive-courseware',
     name: '互动网页课件插件',
-    version: '1.0.19',
+    version: '1.0.20',
     main: 'index.js',
     description: '接入平台原生 html-applet 课件，支持自定义成绩变量与 MAX/AVERAGE 多尝试留分，加权计入课程总成绩册与积分台账',
     author: 'OpenLearn Developer',
@@ -381,7 +381,13 @@ export default {
         try {
           const totalRow = (await db.prepare(`SELECT COUNT(*) AS c FROM ${configsTable}`).get()) as any;
           const total = Number(totalRow?.c || 0);
-          const items = await db.prepare(`SELECT * FROM ${configsTable} ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(pageSize, offset);
+          const items = await db.prepare(`
+            SELECT c.*, l.title AS lesson_title
+            FROM ${configsTable} c
+            LEFT JOIN lessons l ON l.id = c.lesson_id
+            ORDER BY c.updated_at DESC
+            LIMIT ? OFFSET ?
+          `).all(pageSize, offset);
           return { items, total, page, pageSize };
         } catch (e) {
           ctx.log.warn('读取配置列表失败', { error: String(e) });

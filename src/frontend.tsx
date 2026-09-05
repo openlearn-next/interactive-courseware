@@ -26,6 +26,7 @@ interface GradeConfig {
   score_policy: 'MAX' | 'LATEST' | 'AVERAGE';
   score_fields: string;
   lesson_id: string;
+  lesson_title?: string;
 }
 
 const DEFAULT_CONFIG: GradeConfig = {
@@ -215,7 +216,7 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
   );
 
   return (
-    <div style={{ padding: 20, fontFamily: 'Inter, system-ui, sans-serif', color: '#f8fafc', maxWidth: 820 }}>
+    <div style={{ padding: 20, fontFamily: 'Inter, system-ui, sans-serif', color: '#f8fafc', width: '100%', boxSizing: 'border-box' }}>
       <h2 style={{ margin: '0 0 4px 0', fontSize: 18, color: '#38bdf8' }}>🌐 互动网页课件成绩配置</h2>
       <p style={{ margin: '0 0 16px 0', fontSize: 12, color: '#94a3b8' }}>
         课件渲染由平台原生 html-applet 承担；此处配置每个课件的成绩变量、满分折算、课程权重与归属课时。
@@ -343,7 +344,7 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
                   <td style={{ padding: '6px 8px' }}>{cfg.weight_percentage}%</td>
                   <td style={{ padding: '6px 8px' }}>{cfg.raw_full_score}→{cfg.target_full_score}</td>
                   <td style={{ padding: '6px 8px' }}>{cfg.score_policy}</td>
-                  <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{cfg.lesson_id || '—'}</td>
+                  <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{cfg.lesson_title || cfg.lesson_id || '—'}</td>
                   <td style={{ padding: '6px 8px' }}>
                     <button onClick={() => handleEdit(cfg)} style={btnGhost}>编辑</button>{' '}
                     <button onClick={() => handleDelete(cfg.courseware_id)} style={{ ...btnGhost, color: '#f87171', borderColor: '#7f1d1d' }}>删除</button>

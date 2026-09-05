@@ -5,6 +5,12 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.20] - 2026-09-05
+
+### Changed
+- 配置面板宽度改为 100%（铺满可用空间，移除 maxWidth 限制）
+- 配置列表「归属课时」列改为显示可读课时名称（LEFT JOIN lessons.title），不再显示裸 ID
+
 ## [1.0.19] - 2026-09-05
 
 ### Changed（架构重构）
