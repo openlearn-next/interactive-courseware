@@ -1,0 +1,28 @@
+{
+  "name": "openlearn-plugin-interactive-courseware",
+  "version": "1.0.19",
+  "private": true,
+  "type": "module",
+  "description": "互动网页课件插件 —— 支持系统资源库/URL/ZIP课件包引入、自动成绩推导与课程分数学分加权计算",
+  "author": "OpenLearn Developer",
+  "scripts": {
+    "bump": "node scripts/bump-version.js",
+    "build": "node scripts/bump-version.js && npx openlearn-plugin-sdk build"
+  },
+  "dependencies": {
+    "@openlearn/plugin-sdk": "^3.4.3"
+  },
+  "peerDependencies": {
+    "react": ">=17",
+    "react-dom": ">=17"
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "esbuild": "^0.24.0",
+    "express": "^5.2.1",
+    "jszip": "^3.10.0",
+    "typescript": "^5.0.0",
+    "uuid": "^14.0.1"
+  }
+}
