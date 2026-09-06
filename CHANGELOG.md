@@ -5,6 +5,12 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.21] - 2026-09-05
+
+### Added
+- 配置列表「归属课时」改为可点击链接，点击跳转到课程编辑器展示对应课时
+  （依赖宿主 `navigation.setSelectedLesson` API，需宿主 plugin-host.ts 同步支持）
+
 ## [1.0.20] - 2026-09-05
 
 ### Changed

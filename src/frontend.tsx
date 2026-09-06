@@ -203,6 +203,13 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
     }
   };
 
+  // 跳转到课程编辑器展示指定课时
+  const gotoLesson = (lessonId: string) => {
+    if (!lessonId) return;
+    ctx?.navigation?.setSelectedLesson?.(lessonId);
+    ctx?.navigation?.setTeacherTab?.('lesson_editor');
+  };
+
   const field = (label: string, value: number | string, onChange: (v: any) => void, type = 'number') => (
     <div style={{ marginBottom: 10 }}>
       <label style={labelStyle}>{label}</label>
@@ -344,7 +351,20 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
                   <td style={{ padding: '6px 8px' }}>{cfg.weight_percentage}%</td>
                   <td style={{ padding: '6px 8px' }}>{cfg.raw_full_score}→{cfg.target_full_score}</td>
                   <td style={{ padding: '6px 8px' }}>{cfg.score_policy}</td>
-                  <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{cfg.lesson_title || cfg.lesson_id || '—'}</td>
+                  <td style={{ padding: '6px 8px' }}>
+                    {cfg.lesson_id ? (
+                      <a
+                        href="#/lesson_editor"
+                        onClick={(e) => { e.preventDefault(); gotoLesson(cfg.lesson_id); }}
+                        title="跳转到该课时的课程编辑器"
+                        style={{ color: '#60a5fa', cursor: 'pointer', textDecoration: 'underline' }}
+                      >
+                        {cfg.lesson_title || cfg.lesson_id}
+                      </a>
+                    ) : (
+                      <span style={{ color: '#64748b' }}>—</span>
+                    )}
+                  </td>
                   <td style={{ padding: '6px 8px' }}>
                     <button onClick={() => handleEdit(cfg)} style={btnGhost}>编辑</button>{' '}
                     <button onClick={() => handleDelete(cfg.courseware_id)} style={{ ...btnGhost, color: '#f87171', borderColor: '#7f1d1d' }}>删除</button>
