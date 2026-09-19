@@ -59,6 +59,25 @@ const btnGhost: React.CSSProperties = {
   padding: '6px 12px', borderRadius: 6, border: '1px solid #475569', cursor: 'pointer',
   backgroundColor: '#0f172a', color: '#cbd5e1', fontSize: 12,
 };
+const btnAi: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: 5,
+  padding: '5px 10px', borderRadius: 6, border: '1px solid #7c3aed',
+  backgroundColor: '#2e1065', color: '#ddd6fe', fontSize: 11, fontWeight: 600,
+  cursor: 'pointer', lineHeight: 1.2,
+};
+
+// 解析 "a, b; c" 形式的变量串为数组
+function parseFields(raw: string): string[] {
+  return (raw || '').split(/[,，;；\n\r]+/).map((s) => s.trim()).filter(Boolean);
+}
+
+// 图标按钮用的星芒图标
+const SparkleIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style={{ display: 'block', flexShrink: 0 }}>
+    <path d="M12 2l1.9 5.6L19.5 9.5l-5.6 1.9L12 17l-1.9-5.6L4.5 9.5l5.6-1.9L12 2z" />
+    <path d="M19 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2z" />
+  </svg>
+);
 
 function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | null; classId?: string | null }) {
   const currentLessonId = props.lessonId || '';
@@ -75,7 +94,19 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
   const [loading, setLoading] = React.useState(false);
   const [lessonName, setLessonName] = React.useState('');
 
+  // AI 分析状态
+  const [aiAnalyzing, setAiAnalyzing] = React.useState(false);
+  const [aiModal, setAiModal] = React.useState<{
+    open: boolean;
+    candidates: string[];
+    message: string;
+    coursewareName: string;
+  }>({ open: false, candidates: [], message: '', coursewareName: '' });
+  const [aiPicked, setAiPicked] = React.useState<string[]>([]);
+
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  // 当前表单已配置的变量（用于候选去重与「已添加」标记）
+  const existingScoreFields = parseFields(form.score_fields);
 
   // 载入分页配置列表
   const loadConfigs = React.useCallback((p: number) => {
@@ -210,6 +241,66 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
     ctx?.navigation?.setTeacherTab?.('lesson_editor');
   };
 
+  // AI 分析课件成绩变量（打开/复用弹窗，分析期间保持弹窗显示加载态）
+  const handleAiAnalyze = async () => {
+    if (!selectedId || !ctx?.invokeCommand) return;
+    const cwMeta = coursewares.find((c) => c.id === selectedId);
+    const cwName = cwMeta?.name || form.courseware_name || selectedId;
+    setAiAnalyzing(true);
+    setAiPicked([]);
+    setAiModal({ open: true, candidates: [], message: 'AI 正在分析课件源码，请稍候…', coursewareName: cwName });
+    try {
+      // 优先由前端拓取已渲染的课件源码（可覆盖仅存于磁盘的“自动提交版”），
+      // 拓取失败则由后端从 vfs_nodes / system_resources 兜底。
+      let htmlContent = '';
+      try {
+        const resp = await fetch(`/runtime/${encodeURIComponent(cwMeta?.uuid || selectedId)}/`, { credentials: 'same-origin' });
+        if (resp.ok) htmlContent = await resp.text();
+      } catch {
+        // 忽略，交由后端兜底
+      }
+
+      const res = await ctx.invokeCommand('grade.analyze_score_fields', {
+        coursewareId: selectedId,
+        coursewareName: cwName,
+        htmlContent: htmlContent ? htmlContent.slice(0, 60000) : undefined,
+      });
+      const raw: any[] = Array.isArray(res?.candidates) ? res.candidates : [];
+      const candidates = Array.from(new Set(raw.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())));
+      setAiModal({
+        open: true,
+        candidates,
+        message: res?.message || (res?.success === false ? '分析失败' : ''),
+        coursewareName: res?.coursewareName || cwName,
+      });
+    } catch (e: any) {
+      setAiModal({ open: true, candidates: [], message: `调用失败: ${e?.message || e}`, coursewareName: cwName });
+    } finally {
+      setAiAnalyzing(false);
+    }
+  };
+
+  const closeAiModal = () => {
+    setAiModal((m) => ({ ...m, open: false }));
+    setAiPicked([]);
+  };
+
+  const toggleAiPick = (candidate: string, checked: boolean) => {
+    setAiPicked((prev) => (checked ? [...prev, candidate] : prev.filter((c) => c !== candidate)));
+  };
+
+  // 将勾选的候选变量追加（去重）到 score_fields
+  const handleConfirmPicked = () => {
+    const merged = [...existingScoreFields];
+    let added = 0;
+    for (const c of aiPicked) {
+      if (c && !merged.includes(c)) { merged.push(c); added += 1; }
+    }
+    setForm((prev) => ({ ...prev, score_fields: merged.join(', ') }));
+    closeAiModal();
+    if (added > 0) setStatus(`✅ 已添加 ${added} 个成绩变量`);
+  };
+
   const field = (label: string, value: number | string, onChange: (v: any) => void, type = 'number') => (
     <div style={{ marginBottom: 10 }}>
       <label style={labelStyle}>{label}</label>
@@ -262,7 +353,21 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
           )}
 
           <div style={{ marginBottom: 10 }}>
-            <label style={labelStyle}>成绩变量（可留空，多个用逗号/换行分隔，支持点号路径如 result.score）</label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <label style={{ ...labelStyle, marginBottom: 0 }}>成绩变量（可留空，多个用逗号/换行分隔，支持点号路径如 result.score）</label>
+              {!!selectedId && (
+                <button
+                  type="button"
+                  title="调用 AI 分析课件源码，自动识别可能表示学生成绩的变量"
+                  onClick={handleAiAnalyze}
+                  disabled={aiAnalyzing}
+                  style={{ ...btnAi, opacity: aiAnalyzing ? 0.6 : 1, cursor: aiAnalyzing ? 'wait' : 'pointer' }}
+                >
+                  <SparkleIcon />
+                  <span>{aiAnalyzing ? '分析中…' : 'AI 分析'}</span>
+                </button>
+              )}
+            </div>
             <textarea
               rows={2}
               value={form.score_fields}
@@ -386,6 +491,74 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
       </div>
 
       {status && <p style={{ marginTop: 8, fontSize: 12, color: status.includes('✅') ? '#4ade80' : status.includes('❌') ? '#f87171' : '#eab308' }}>{status}</p>}
+
+      {/* ── AI 成绩变量分析弹窗 ── */}
+      {aiModal.open && (
+        <div
+          role="dialog"
+          aria-label="AI 成绩变量分析"
+          onClick={(e) => { if (e.target === e.currentTarget) closeAiModal(); }}
+          style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(4px)', zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+        >
+          <div style={{ width: 560, maxWidth: '92vw', maxHeight: '86vh', overflowY: 'auto', backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: 14, padding: 20, boxShadow: '0 20px 40px rgba(0, 0, 0, 0.45)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <h3 style={{ margin: 0, fontSize: 15, color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <SparkleIcon /> AI 成绩变量分析
+              </h3>
+              <button onClick={closeAiModal} style={btnGhost} aria-label="关闭">✕</button>
+            </div>
+            <p style={{ margin: '0 0 14px 0', fontSize: 12, color: '#94a3b8' }}>
+              课件：<b style={{ color: '#e2e8f0' }}>{aiModal.coursewareName || '—'}</b>
+            </p>
+
+            {aiAnalyzing ? (
+              <div style={{ fontSize: 13, color: '#c4b5fd', backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: 8, padding: 14 }}>
+                ⏳ 正在读取课件代码并调用 AI 分析，请稍候…
+              </div>
+            ) : aiModal.candidates.length === 0 ? (
+              <div style={{ fontSize: 13, color: '#fbbf24', backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: 8, padding: 12 }}>
+                {aiModal.message || 'AI 未识别到可能的成绩变量，可在上方手动填写。'}
+              </div>
+            ) : (
+              <>
+                <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>
+                  勾选需要监控的成绩变量（已配置的自动置灰），保存后将按顺序依次尝试提取：
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {aiModal.candidates.map((c) => {
+                    const added = existingScoreFields.includes(c);
+                    const checked = added || aiPicked.includes(c);
+                    return (
+                      <label
+                        key={c}
+                        style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 8, border: `1px solid ${checked ? '#7c3aed' : '#334155'}`, backgroundColor: checked ? '#2e1065' : '#1e293b', cursor: added ? 'not-allowed' : 'pointer', opacity: added ? 0.65 : 1 }}
+                      >
+                        <input type="checkbox" checked={checked} disabled={added} onChange={(e) => toggleAiPick(c, e.target.checked)} />
+                        <code style={{ fontSize: 13, color: '#e2e8f0' }}>{c}</code>
+                        {added && <span style={{ marginLeft: 'auto', fontSize: 11, color: '#4ade80' }}>已添加</span>}
+                      </label>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
+              <button onClick={handleAiAnalyze} disabled={aiAnalyzing} style={{ ...btnGhost, opacity: aiAnalyzing ? 0.6 : 1 }}>
+                {aiAnalyzing ? '⏳ 分析中…' : '🔄 重新分析'}
+              </button>
+              <button onClick={closeAiModal} style={btnGhost}>取消</button>
+              <button
+                onClick={handleConfirmPicked}
+                disabled={aiAnalyzing || aiPicked.length === 0}
+                style={{ ...btnPrimary, backgroundColor: aiAnalyzing || aiPicked.length === 0 ? '#334155' : '#7c3aed', cursor: aiAnalyzing || aiPicked.length === 0 ? 'not-allowed' : 'pointer' }}
+              >
+                ＋ 添加选中（{aiPicked.length}）
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -100,12 +100,78 @@ function round2(v: number): number {
   return Math.round(v * 100) / 100;
 }
 
+/**
+ * 从平台数据库读取课件入口 HTML 源码。
+ *
+ * ⚠️ 平台 openlearn-token-enforcer 禁止插件 import `node:fs` / `node:path` 等内置模块
+ *    （打包时直接报错），因此这里不读磁盘，而是读取平台已经持久化的源码：
+ *      1) `vfs_nodes`        —— “文件/代码”型课件的原始内容
+ *      2) `system_resources` —— 上传的 html / folder 型课件（按 id / uuid / 名称关联）
+ *    与平台 server/routes/bridge.ts 的自愈逻辑保持一致。
+ */
+async function loadCoursewareHtml(db: any, cw: any): Promise<{ html: string; source?: string; error?: string }> {
+  const norm = (s: any) => String(s || '').replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+
+  // folder 型：从文件数组 JSON 中挑选入口文件
+  const pickEntryFromFiles = (files: any[], entry: string): string => {
+    if (!Array.isArray(files) || files.length === 0) return '';
+    const wanted = norm(entry);
+    const base = wanted.split('/').pop() || '';
+    const byExact = files.find((f) => norm(f?.path) === wanted);
+    if (byExact?.content !== undefined) return String(byExact.content);
+    const byBase = files.find((f) => (norm(f?.path).split('/').pop() || '') === base);
+    if (byBase?.content !== undefined) return String(byBase.content);
+    const index = files.find((f) => /(^|\/)index\.html?$/.test(norm(f?.path)));
+    if (index?.content !== undefined) return String(index.content);
+    const anyHtml = files.find((f) => /\.html?$/.test(norm(f?.path)));
+    if (anyHtml?.content !== undefined) return String(anyHtml.content);
+    return '';
+  };
+
+  // 1) vfs_nodes
+  try {
+    if (cw?.id) {
+      const node = (await db.prepare("SELECT content FROM vfs_nodes WHERE id = ? AND type = 'file'").get(cw.id)) as any;
+      if (node?.content) return { html: String(node.content), source: 'vfs_nodes' };
+    }
+  } catch {
+    // 表不存在等情况忽略，继续尝试 system_resources
+  }
+
+  // 2) system_resources
+  try {
+    let row: any = null;
+    if (cw?.uuid || cw?.id) {
+      row = (await db.prepare('SELECT id, name, type, content FROM system_resources WHERE id = ? OR id = ?').get(cw.uuid || '', cw.id || '')) as any;
+    }
+    if (!row && cw?.name) {
+      const nameCandidate = String(cw.name).endsWith('.html') ? cw.name : `${cw.name}.html`;
+      row = (await db.prepare('SELECT id, name, type, content FROM system_resources WHERE name = ? OR name = ?').get(cw.name, nameCandidate)) as any;
+    }
+    if (row?.content) {
+      if (row.type === 'folder') {
+        let files: any[] = [];
+        try { files = JSON.parse(row.content); } catch { files = []; }
+        const html = pickEntryFromFiles(files, cw?.entry || '');
+        if (html) return { html, source: 'system_resources:folder' };
+      } else {
+        return { html: String(row.content), source: 'system_resources:html' };
+      }
+    }
+  } catch {
+    // 忽略，走最终错误返回
+  }
+
+  return { html: '', error: '未能在平台数据库中定位课件源码（vfs_nodes / system_resources 均未命中）' };
+}
+
 export default {
   manifest: {
     id: 'openlearn-plugin-interactive-courseware',
     name: '互动网页课件插件',
-    version: '1.0.21',
+    version: '1.0.26',
     main: 'index.js',
+    executionMode: 'inline',
     description: '接入平台原生 html-applet 课件，支持自定义成绩变量与 MAX/AVERAGE 多尝试留分，加权计入课程总成绩册与积分台账',
     author: 'OpenLearn Developer',
     engines: { openlearn: '>=0.1.12' },
@@ -462,6 +528,110 @@ export default {
         } catch (e) {
           ctx.log.error('删除课件成绩配置失败', { coursewareId, error: String(e) });
           return { success: false, message: String(e) };
+        }
+      },
+    });
+
+    // ── 10. AI 智能分析课件成绩变量 ──
+    // 从平台数据库读取课件 HTML 源码，调用平台 AI 服务分析可能的成绩变量。
+    // 注意：受 token-enforcer 限制，插件禁止 import node:* 内置模块，故不读磁盘文件。
+    await commandBus.registerHandler('grade.analyze_score_fields', {
+      async execute(command: any) {
+        const p: any = command?.payload || {};
+        const coursewareId = p?.coursewareId;
+        if (!coursewareId) return { success: false, message: '缺少 coursewareId', candidates: [] };
+
+        // 10a. 查询课件元信息（用于兜底读取与显示名称；缺失不致命）
+        let cw: any = null;
+        if (db) {
+          try {
+            cw = await db.prepare('SELECT id, uuid, name, type, entry FROM courseware WHERE id = ?').get(coursewareId);
+          } catch (e) {
+            ctx.log.warn('查询课件元信息失败', { coursewareId, error: String(e) });
+          }
+        }
+        const coursewareName = p?.coursewareName || cw?.name || coursewareId;
+
+        // 10b. 获取入口 HTML：前端已抓取则直接使用（可覆盖仅存于磁盘的「自动提交版」课件），
+        //      否则回退平台数据库（vfs_nodes / system_resources）。
+        let rawHtml = typeof p?.htmlContent === 'string' ? p.htmlContent : '';
+        let source = 'frontend';
+        if (!rawHtml) {
+          if (!db) return { success: false, message: '数据库不可用，且未提供课件源码', candidates: [] };
+          const loaded = await loadCoursewareHtml(db, cw || { id: coursewareId });
+          if (!loaded.html) {
+            ctx.log.warn('读取课件源码失败', { coursewareId, uuid: cw?.uuid, entry: cw?.entry, error: loaded.error });
+            return { success: false, message: loaded.error || '未能读取课件源码', candidates: [] };
+          }
+          rawHtml = loaded.html;
+          source = loaded.source || 'db';
+        }
+        // 截取前 60 KB，避免超出 AI 上下文窗口
+        const htmlContent = rawHtml.length > 60000
+          ? rawHtml.slice(0, 60000) + '\n<!-- [已截断，超出 60KB] -->'
+          : rawHtml;
+
+        // 10c. 调用 AI 服务分析成绩变量
+        const aiService = ctx.services?.ai;
+        if (!aiService?.generateText) {
+          return { success: false, message: '平台 AI 服务不可用（需要配置 AI Provider）', candidates: [] };
+        }
+
+        const systemInstruction = `你是一名专业的 HTML 互动课件代码审计助手。
+任务：分析给定课件 HTML/JavaScript 源码，找出所有可能表示"学生得分/成绩"的 JavaScript 变量名。
+
+输出规则（严格遵守，不得偏离）：
+1. 只输出一个合法 JSON 数组，例如：["score","result.total","userScore"]
+2. 数组中每个元素是一个变量名字符串（支持点号路径如 result.score）
+3. 若完全找不到成绩变量，输出空数组：[]
+4. 不输出任何解释、注释或 Markdown，只输出 JSON 数组本身
+
+成绩变量的判断依据（满足其中一项即可）：
+- 变量名包含 score、grade、point、mark、result、total、final、correct、star 等语义词
+- 被赋值后通过 postMessage 发送给父窗口（表示上报成绩）
+- 在 submit/finish/complete/end 等函数中被读取或传递
+- 被写入 localStorage/sessionStorage 且键名含成绩语义`;
+
+        const userPrompt = `课件名称：${coursewareName}
+
+请分析以下 HTML 课件源码，提取所有可能表示学生成绩的 JavaScript 变量名：
+
+\`\`\`html
+${htmlContent}
+\`\`\``;
+
+        try {
+          const aiResponse = await aiService.generateText(userPrompt, {
+            systemInstruction,
+            temperature: 0.1,
+          });
+
+          // 解析 AI 返回的 JSON 数组（容错处理）：
+          // 推理型模型（如 MiniMax-M3）会先输出 <think>…</think>，需先剥离，
+          // 否则非贪婪匹配可能命中推理过程中的方括号；同时剔除 markdown 代码围栏。
+          const cleaned = aiResponse
+            .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
+            .replace(/```[a-zA-Z]*\s*/g, '')
+            .trim();
+          const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
+          if (!jsonMatch) {
+            return { success: true, candidates: [], rawResponse: aiResponse, message: 'AI 未能识别到成绩变量' };
+          }
+          let candidates: string[] = [];
+          try {
+            const parsed = JSON.parse(jsonMatch[0]);
+            candidates = Array.isArray(parsed)
+              ? parsed.filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+              : [];
+          } catch {
+            return { success: true, candidates: [], rawResponse: aiResponse, message: 'AI 返回结果解析失败' };
+          }
+
+          ctx.log.info('AI 成绩变量分析完成', { coursewareId, source, candidateCount: candidates.length });
+          return { success: true, candidates, coursewareName };
+        } catch (e) {
+          ctx.log.error('AI 分析成绩变量失败', { coursewareId, error: String(e) });
+          return { success: false, message: `AI 分析失败: ${String(e)}`, candidates: [] };
         }
       },
     });

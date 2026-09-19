@@ -1,0 +1,25 @@
+{
+  "id": "openlearn-plugin-interactive-courseware",
+  "name": "互动网页课件插件",
+  "version": "1.0.26",
+  "main": "index.js",
+  "executionMode": "inline",
+  "description": "接入平台原生 html-applet 课件，支持自定义成绩变量与 MAX/AVERAGE 多尝试留分，加权计入课程总成绩册与积分台账",
+  "author": "OpenLearn Developer",
+  "engines": {
+    "openlearn": ">=0.1.12"
+  },
+  "requires": [
+    "@openlearn/core:ICommandBusService@^1.0.0",
+    "@openlearn/core:IEventBusService@^1.0.0",
+    "@openlearn/core:IDatabase@^1.0.0",
+    "@openlearn/core:IPointsLedgerService@^1.0.0",
+    "@openlearn/core:IPointsDimensionRegistry@^1.0.0",
+    "@openlearn/core:ISemesterGradeService@^1.0.0"
+  ],
+  "capabilitiesProposed": [
+    "courseware:read",
+    "courseware:write",
+    "courseware:grade"
+  ]
+}

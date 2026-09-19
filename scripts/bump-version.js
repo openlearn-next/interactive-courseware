@@ -12,6 +12,7 @@ const rootDir = path.resolve(__dirname, '..');
 
 const pkgPath = path.join(rootDir, 'package.json');
 const indexPath = path.join(rootDir, 'src', 'index.ts');
+const manifestPath = path.join(rootDir, 'manifest.json');
 
 // 1. 读取并更新 package.json 中的版本号
 const pkgRaw = fs.readFileSync(pkgPath, 'utf-8');
@@ -33,6 +34,13 @@ if (fs.existsSync(indexPath)) {
     `version: '${newVersion}'`
   );
   fs.writeFileSync(indexPath, indexContent, 'utf-8');
+}
+
+// 3. 同步更新根目录 manifest.json 的 version（打包 ZIP 时直接读取该文件）
+if (fs.existsSync(manifestPath)) {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+  manifest.version = newVersion;
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
 }
 
 console.log(`🚀 [Version Bump] 成功递进补丁版本号: ${currentVersion} ➔ v${newVersion}`);
