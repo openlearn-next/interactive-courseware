@@ -51,6 +51,14 @@ const inputStyle: React.CSSProperties = {
   backgroundColor: '#0f172a', border: '1px solid #334155', color: '#f8fafc', fontSize: 13,
 };
 const labelStyle: React.CSSProperties = { display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 6 };
+const inlineCodeStyle: React.CSSProperties = {
+  backgroundColor: '#1e293b',
+  border: '1px solid #334155',
+  borderRadius: 4,
+  padding: '1px 5px',
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  color: '#7dd3fc',
+};
 const btnPrimary: React.CSSProperties = {
   padding: '8px 16px', borderRadius: 8, border: 'none', cursor: 'pointer',
   backgroundColor: '#2563eb', color: '#fff', fontWeight: 600, fontSize: 13,
@@ -316,9 +324,38 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
   return (
     <div style={{ padding: 20, fontFamily: 'Inter, system-ui, sans-serif', color: '#f8fafc', width: '100%', boxSizing: 'border-box' }}>
       <h2 style={{ margin: '0 0 4px 0', fontSize: 18, color: '#38bdf8' }}>🌐 互动网页课件成绩配置</h2>
-      <p style={{ margin: '0 0 16px 0', fontSize: 12, color: '#94a3b8' }}>
+      <p style={{ margin: '0 0 12px 0', fontSize: 12, color: '#94a3b8' }}>
         课件渲染由平台原生 html-applet 承担；此处配置每个课件的成绩变量、满分折算、课程权重与归属课时。
       </p>
+
+      {/* 分数去向说明：消除“权重是否影响学期成绩”的歧义 */}
+      <div
+        style={{
+          margin: '0 0 16px 0',
+          fontSize: 11,
+          color: '#94a3b8',
+          lineHeight: 1.75,
+          padding: '10px 12px',
+          borderRadius: 8,
+          backgroundColor: '#0f172a',
+          border: '1px solid #1e293b',
+        }}
+      >
+        <div style={{ color: '#cbd5e1', fontWeight: 600, marginBottom: 4 }}>📐 分数去向（两个目标，口径不同）</div>
+        <div>
+          归一化分 = <code style={inlineCodeStyle}>聚合分 ÷ 课件内部原始满分 × 折算为平台标准满分</code>
+        </div>
+        <div>
+          ① <b>学期成绩册</b>：写入「归一化分」（<b>未加权</b>）；需同时填写「归属课时」才会生效。
+        </div>
+        <div>
+          ② <b>积分台账</b>：按 <code style={inlineCodeStyle}>归一化分 × 课程总成绩权重%</code> 累加，
+          <b>只增不减</b>（重做低分不会扣回已得积分）。
+        </div>
+        <div style={{ color: '#fbbf24', marginTop: 4 }}>
+          ⚠️ 「课程总成绩权重」<b>不影响学期成绩册</b>，仅作用于积分台账。
+        </div>
+      </div>
 
       {(currentLessonId || currentClassId) && (
         <div style={{ fontSize: 11, color: '#60a5fa', marginBottom: 14, padding: '8px 12px', borderRadius: 8, backgroundColor: '#1e293b', border: '1px solid #334155' }}>
@@ -381,9 +418,9 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            {field('课件内部原始满分', form.raw_full_score, (v) => setForm({ ...form, raw_full_score: v }))}
-            {field('折算为平台标准满分', form.target_full_score, (v) => setForm({ ...form, target_full_score: v }))}
-            {field('课程总成绩权重 (%)', form.weight_percentage, (v) => setForm({ ...form, weight_percentage: v }))}
+            {field('课件内部原始满分（归一化分母）', form.raw_full_score, (v) => setForm({ ...form, raw_full_score: v }))}
+            {field('折算为平台标准满分（学期成绩口径）', form.target_full_score, (v) => setForm({ ...form, target_full_score: v }))}
+            {field('课程总成绩权重 %（仅作用于积分台账）', form.weight_percentage, (v) => setForm({ ...form, weight_percentage: v }))}
 
             <div style={{ marginBottom: 10 }}>
               <label style={labelStyle}>多次作答留分策略</label>

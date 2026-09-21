@@ -40,6 +40,31 @@ const DEFAULT_CONFIG = {
   lesson_id: '',
 };
 
+/**
+ * 非真实学生的 attempt 归属标识。
+ *
+ * `injectLmsSdk`（server/routes/shared.ts）在无法识别/无会话时写入 courseware_attempt.student_id 的哨兵值：
+ *   - 'teacher' / 'teacher_preview' → 教师或管理员预览（attempt id 前缀 att_teacher_）
+ *   - 'guest'                       → 匿名、无 cookie 访问（attempt id 前缀 att_guest_）
+ * 这类记录绝不允许写入学期成绩册或积分台账，否则教师预览分会污染真实成绩。
+ */
+const NON_STUDENT_OWNERS = new Set(['teacher', 'teacher_preview', 'guest', 'admin']);
+
+/**
+ * 归属守卫：确认 attempt 的归属者确实是 `students` 表中的真实学生。
+ * fail-closed —— 查询异常一律视为非学生。
+ */
+async function isRealStudent(db: any, studentId: string): Promise<boolean> {
+  const id = String(studentId || '');
+  if (!id || NON_STUDENT_OWNERS.has(id)) return false;
+  try {
+    const row = await db.prepare('SELECT id FROM students WHERE id = ? LIMIT 1').get(id);
+    return !!row;
+  } catch {
+    return false;
+  }
+}
+
 function randomId(): string {
   const g: any = globalThis as any;
   if (typeof g?.crypto?.randomUUID === 'function') return g.crypto.randomUUID();
@@ -169,7 +194,7 @@ export default {
   manifest: {
     id: 'openlearn-plugin-interactive-courseware',
     name: '互动网页课件插件',
-    version: '1.0.26',
+    version: '1.0.27',
     main: 'index.js',
     executionMode: 'inline',
     description: '接入平台原生 html-applet 课件，支持自定义成绩变量与 MAX/AVERAGE 多尝试留分，加权计入课程总成绩册与积分台账',
@@ -298,9 +323,22 @@ export default {
       const srcDocMatch = /^att_srcdoc_(.+)_\d+_\d+$/.exec(attemptId);
       if (srcDocMatch) lessonId = srcDocMatch[1];
 
-      // 4c. classId
+      // 4c. 归属守卫：只有 students 表中的真实学生才继续归集成绩。
+      //     教师/管理员预览（student_id='teacher'）与匿名访客（student_id='guest'）
+      //     同样会在 courseware_attempt 里留下记录，必须在此拦截，
+      //     否则它们会被当成真实学生写进学期成绩册与积分台账。
+      if (!(await isRealStudent(db, studentId))) {
+        ctx.log.info('非真实学生提交（教师预览/匿名访客），跳过成绩归集', {
+          attemptId,
+          studentId,
+          coursewareId,
+        });
+        return;
+      }
+
+      // 4c-bis. classId
       let classId = '';
-      if (studentId && studentId !== 'teacher_preview') {
+      if (studentId) {
         const row = (await db.prepare('SELECT class_id FROM class_students WHERE student_id = ? LIMIT 1').get(studentId)) as any;
         classId = row?.class_id || '';
       }
@@ -329,9 +367,9 @@ export default {
         }
       }
 
-      // 仅真实学生（有 coursewareId + studentId）才做聚合与同步
-      if (!studentId || !coursewareId || studentId === 'teacher_preview') {
-        ctx.log.info('教师预览/缺失上下文提交，跳过成绩归集', { attemptId, rawScore: finalRawScore });
+      // 4e-bis. 缺少 coursewareId 无法定位成绩配置，跳过（学生归属校验已在 4c 完成）
+      if (!coursewareId) {
+        ctx.log.info('缺少课件上下文，跳过成绩归集', { attemptId, studentId, rawScore: finalRawScore });
         return;
       }
 

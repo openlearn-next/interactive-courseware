@@ -5,6 +5,16 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.27] - 2026-09-21
+
+### Fixed
+- **修复归属守卫失效：教师预览分与匿名访客分会被写进真实成绩册**。`src/index.ts` 的守卫写作 `studentId === 'teacher_preview'`，但平台 `injectLmsSdk`（`server/routes/shared.ts`）实际写入 `courseware_attempt.student_id` 的哨兵是 `'teacher'`（教师/管理员预览）与 `'guest'`（匿名无 cookie 访问），**从不出现 `'teacher_preview'`** —— 该守卫等于永不生效。一旦课件配置了「归属课时」，教师预览或匿名访客的提交就会被 `saveSemesterGrade` 当作真实学生写入学期成绩册，并向积分台账加发积分。
+  - 现改为 `isRealStudent()` 归属守卫：先排除 `teacher` / `teacher_preview` / `guest` / `admin` 哨兵，再回查 `students` 主表确认归属者确实是真实学生（查询异常时 fail-closed 视为非学生），未通过则记录日志并直接跳过归集。
+  - 守卫位置前置到读取课时/班级之前，避免为无效提交做无谓的配置查询。
+
+### Changed
+- **成绩配置面板明确「分数去向」**：此前「课件内部原始满分 / 折算为平台标准满分 / 课程总成绩权重 (%)」三者并排，容易让教师误以为权重会影响学期成绩。实际口径是：学期成绩册写入 `聚合分 ÷ 课件内部原始满分 × 折算为平台标准满分`（**未加权**，且必须填写「归属课时」），积分台账才用 `该归一化分 × 权重%` 且只增不减。现在面板顶部新增「分数去向」说明卡片，并在三个字段标签中直接标注各自的作用域。
+
 ## [1.0.26] - 2026-09-19
 
 ### Fixed
