@@ -29,6 +29,24 @@ const ISemesterGradeServiceToken = new Token('@openlearn/core:ISemesterGradeServ
 const POINTS_DIMENSION_ID = 'interactive_courseware';
 const SUBMIT_EVENT = 'courseware.attempt_submitted';
 
+import { SCORE_MONITOR_SCRIPT } from './score-monitor-script.js';
+
+/** 「课件运行时脚本扩展点」的 DI Token（按名字解析，避免插件 bundle 硬依赖 SDK 构建产物） */
+interface RuntimeScriptRegistryLike {
+  register(
+    owner: string,
+    script: { id: string; source: string; position?: 'head' | 'body-end'; priority?: number }
+  ): void;
+  unregister(owner: string, id: string): void;
+}
+const RUNTIME_SCRIPT_REGISTRY_TOKEN_NAME = '@openlearn/core:ICoursewareRuntimeScriptRegistry';
+const ICoursewareRuntimeScriptRegistryToken = new Token<RuntimeScriptRegistryLike>(RUNTIME_SCRIPT_REGISTRY_TOKEN_NAME);
+const SCORE_MONITOR_SCRIPT_ID = 'score-variable-monitor';
+
+// 停用插件时需要撤销注册，而 deactivate() 拿不到 ctx，故在此保留注册句柄
+let runtimeScriptRegistryRef: any = null;
+let runtimeScriptOwnerId: string | null = null;
+
 type ScorePolicy = 'MAX' | 'LATEST' | 'AVERAGE';
 
 const DEFAULT_CONFIG = {
@@ -194,7 +212,7 @@ export default {
   manifest: {
     id: 'openlearn-plugin-interactive-courseware',
     name: '互动网页课件插件',
-    version: '1.0.28',
+    version: '1.0.29',
     main: 'index.js',
     executionMode: 'inline',
     description: '接入平台原生 html-applet 课件，支持自定义成绩变量与 MAX/AVERAGE 多尝试留分，加权计入课程总成绩册与积分台账',
@@ -726,12 +744,48 @@ ${htmlContent}
       },
     });
 
+    // ── 6. 通过「课件运行时脚本扩展点」注册分数变量监视器 ──
+    // 课件 iframe 是 credentialless + 无 allow-same-origin 的 opaque origin，父窗口读不到它内部的变量，
+    // 服务端拼接 HTML（injectLmsSdk）是平台唯一能向课件投递代码的位置 —— 所以监视器脚本必须由平台代注入。
+    // 用字符串 token 解析（而非从 '@openlearn/plugin-sdk' 导入 Token 值），
+    // 这样插件 bundle 不依赖宿主 SDK 构建产物是否已包含该 Token，部署顺序更安全。
+    try {
+      const registry = await ctx.resolve(ICoursewareRuntimeScriptRegistryToken);
+      if (registry && typeof registry.register === 'function') {
+        registry.register(ctx.pluginId, {
+          id: SCORE_MONITOR_SCRIPT_ID,
+          source: SCORE_MONITOR_SCRIPT,
+          position: 'body-end',
+          priority: 200,
+        });
+        runtimeScriptRegistryRef = registry;
+        runtimeScriptOwnerId = ctx.pluginId;
+        ctx.log.info('已注册课件运行时分数变量监视器', { id: SCORE_MONITOR_SCRIPT_ID });
+      } else {
+        ctx.log.warn('课件运行时脚本扩展点不可用，分数变量监视器未注册（成绩仍可按原生提交归集）', {
+          token: RUNTIME_SCRIPT_REGISTRY_TOKEN_NAME,
+        });
+      }
+    } catch (e) {
+      ctx.log.warn('课件运行时脚本扩展点解析失败，分数变量监视器未注册', { error: String(e) });
+    }
+
     ctx.log.info('互动网页课件插件激活成功（订阅原生提交 + 多尝试留分聚合）', {
       configsTable, attemptsTable, summaryTable, submitEvent: SUBMIT_EVENT,
     });
   },
 
   async deactivate() {
+    // 撤销「课件运行时脚本扩展点」注册，避免停用插件后监视器仍在注入
+    try {
+      if (runtimeScriptRegistryRef && runtimeScriptOwnerId) {
+        runtimeScriptRegistryRef.unregister(runtimeScriptOwnerId, SCORE_MONITOR_SCRIPT_ID);
+      }
+    } catch (e) {
+      // 内核可能已销毁，忽略
+    }
+    runtimeScriptRegistryRef = null;
+    runtimeScriptOwnerId = null;
     // ctx.db.dropAllTables() 由 PluginHost 自动调用
   },
 };

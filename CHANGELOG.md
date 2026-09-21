@@ -5,6 +5,20 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.29] - 2026-09-21
+
+### Added
+- **通过平台新增的「课件运行时脚本扩展点」注册本插件自己的课件内脚本**：`activate()` 末尾调用 `ctx.resolve(new Token('@openlearn/core:ICoursewareRuntimeScriptRegistry'))`，注册 `{ id: 'score-variable-monitor', source: SCORE_MONITOR_SCRIPT, position: 'body-end', priority: 200 }`；`deactivate()` 撤销注册，避免停用插件后监视器仍在注入。扩展点不可用（旧版宿主 / Worker 模式）时只记一条 warn，**不影响既有原生提交归集链路**。
+  - 按**名字**解析 Token（`new Token('@openlearn/core:ICoursewareRuntimeScriptRegistry')`），而不是从 `@openlearn/plugin-sdk` 导入该 Token 的值 —— 这样插件 bundle 不依赖宿主 SDK 构建产物是否已包含新 Token，升级顺序更安全（与本插件既有的 `ISemesterGradeServiceToken` 做法一致）。
+  - 该扩展点存在的意义：互动课件跑在 `credentialless` + 无 `allow-same-origin` 的 iframe（opaque origin）里，父窗口读不到它内部的任何状态，服务端拼接 HTML 是平台唯一能向课件投递代码的位置；此前该位置只硬编码了 Bridge SDK，插件无法参与。
+
+### Changed
+- **分数变量监视器改由插件自己拥有**：此前监视器代码硬写在宿主 `server/utils/bridge-sdk.ts` 的模板字符串里，插件只是被动消费它上报的样本。现新增 `src/score-monitor-script.ts`（导出 `SCORE_MONITOR_SCRIPT`）承载该脚本，宿主侧实现已整体移除：
+  - 自包含 IIFE，只使用 `window.LMS` 这个公开 API，不引用 Bridge SDK IIFE 内部的私有变量（自带 `__LMS_NUM_RE` / `__LMS_RATIO_RE` / `__lmsIsShown`，日志改走 `console.warn`）；平台保证注入位置 `body-end` 排在 Bridge SDK 之后，故 `window.LMS` 必然就绪。
+  - 行为与 v1.0.28 所依赖的宿主版本完全一致：三层采集（`window.__LMS_WATCH__` 显式声明 → window 上名字匹配 `score|point|grade|mark|correct|right` 的有限数值属性自动发现 → 分数类元素**可见**文本兜底、键名形如 `dom__score`）、`setInterval(800ms)` + `MutationObserver`（300ms 节流）检测变化、静默 `1200ms` 后以 `LMS.saveProgress({ score, watch })` 上报一次样本、单会话上限 60 次、同一元素按选择器去重（避免 `#score` 与 `[id*="score" i]` 重复登记）、`window.__LMS_WATCH__ = false` 可整体退出。
+  - 采样仍为 `status='inprogress'`，**不会**提前把 attempt 置为已完成，但同样写 `submission_result` / `submission_raw` 并发出 `courseware.attempt_submitted`；快照落到 `submission_result.extra_json.watch` 与 `submission_raw.payload_json.watch`，与 `grade.list_watch_variables`、配置页可点选变量、`score_policy` 样本聚合完全兼容。
+- 验证：插件与宿主 `tsc --noEmit` 均 0 错误；jsdom 冒烟测试先真实执行 `BRIDGE_SDK_CODE`、再执行本插件脚本 —— 两段脚本 `doubleBackslashSeqs=0`，空闲 1.5s 零上报，`window.userScore=55` 触发 1 次采样（`score=55`），`#score` 文本改为 `82` 再触发 1 次（`score=82`、`watch.dom__score=82`，且无重复 DOM 键）。
+
 ## [1.0.28] - 2026-09-21
 
 ### Added
