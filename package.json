@@ -1,6 +1,6 @@
 {
   "name": "openlearn-plugin-interactive-courseware",
-  "version": "1.0.27",
+  "version": "1.0.28",
   "private": true,
   "type": "module",
   "description": "互动网页课件插件 —— 支持系统资源库/URL/ZIP课件包引入、自动成绩推导与课程分数学分加权计算",

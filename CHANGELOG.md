@@ -5,6 +5,17 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.28] - 2026-09-21
+
+### Added
+- **接管平台「分数变量监视器」的采样结果，让留分策略真正有样本可用**。平台原生 `server/utils/bridge-sdk.ts` 新增了分数变量监视器：它会随 Bridge SDK 注入课件 iframe，持续观察课件内的分数变量（`window` 上的分数语义全局变量、`window.__LMS_WATCH__` 显式声明、以及分数类 DOM 元素的**可见**文本），一旦发生变化就以 `LMS.saveProgress` 上报一次样本，快照落在 `submission_raw.payload_json.watch` 与 `submission_result.extra_json.watch`。插件侧配套：
+  - **新增命令 `grade.list_watch_variables`**：从该课件最近一条含 `watch` 快照的上报里取出变量名，供配置页做候选，教师不必手写变量名；返回 `{ variables, sampledAt, changed }`，变量名统一带 `watch.` 前缀；
+  - **配置页「成绩变量」支持点击选用**（`src/frontend.tsx`）：在变量输入框下方渲染「平台已监视到的变量（点击选用）」胶囊按钮组并显示最近样本时间，点击即增删 `score_fields` 条目（已选显示 `✓`）；尚无样本时提示「先让学生端打开一次该课件」；
+  - 变量填写格式随之明确为点路径，如 `watch.userScore`、`watch.score`、`watch.dom__score`（`dom__score` 是 DOM 兜底键名，用于覆盖把分数只写进 `#score` 而完全不调用 `LMS.*` 的静态课件）。
+
+### Fixed
+- **修复「多次作答留分策略」永远退化为 LATEST**。此前聚合只在 `grade_attempts` 上按 `attempt_id` 取值，而一个学生在一个课件上只会复用同一条 active attempt（该表恒为一行），所以 `score_policy` 的 `MAX` / `AVERAGE` 分支永远不可能生效。现改为读取**样本历史**：`SELECT payload_json FROM submission_raw WHERE attempt_id = ? ORDER BY created_at ASC`，逐行解析后按 `score_fields`（未配置时回退 `payload.score`）取分，得到完整样本序列再交给 `aggregateScores(samples, policy)`；读不到样本时回退本次上报分。`grade_attempts` 仍保留为 attempt 级最新值，默认策略 `LATEST` 的行为与升级前一致。
+
 ## [1.0.27] - 2026-09-21
 
 ### Fixed

@@ -194,7 +194,7 @@ export default {
   manifest: {
     id: 'openlearn-plugin-interactive-courseware',
     name: '互动网页课件插件',
-    version: '1.0.27',
+    version: '1.0.28',
     main: 'index.js',
     executionMode: 'inline',
     description: '接入平台原生 html-applet 课件，支持自定义成绩变量与 MAX/AVERAGE 多尝试留分，加权计入课程总成绩册与积分台账',
@@ -351,21 +351,38 @@ export default {
       if (!config) config = { ...DEFAULT_CONFIG };
       if (config.lesson_id) lessonId = config.lesson_id;
 
-      // 4e. 成绩解析：自定义变量优先 → 默认兜底
-      let finalRawScore = nativeScore;
+      // 4e. 成绩解析：从「样本历史」取分，而不是只看本次上报。
+      //     原生 bridge-sdk 的分数变量监视器每次发现分数变量变化，就以 saveProgress 上报一次；
+      //     host 的 courseware.submit_attempt 会为每次上报写一行 submission_raw
+      //     （payload_json = { score, ..., watch: {...} }）。因此这里能拿到完整样本序列，
+      //     配置里的 score_policy（MAX / AVERAGE / LATEST）才真正有意义。
+      //     旧实现只在 grade_attempts 上按 attempt_id 聚合，而一个学生在一个课件上只会复用
+      //     同一条 active attempt（该表只有一行），导致 MAX / AVERAGE 永远退化为 LATEST。
       const customFields = parseScoreFields(config.score_fields || '');
-      if (customFields.length) {
-        try {
-          const resultRow = (await db.prepare('SELECT extra_json FROM submission_result WHERE attempt_id = ?').get(attemptId)) as any;
-          if (resultRow?.extra_json) {
-            const rawExtra = JSON.parse(resultRow.extra_json);
-            const customScore = extractScoreFromFields(rawExtra, customFields);
-            if (customScore !== null) finalRawScore = customScore;
+      let samples: number[] = [];
+      try {
+        const rawRows = (await db.prepare(
+          'SELECT payload_json FROM submission_raw WHERE attempt_id = ? ORDER BY created_at ASC'
+        ).all(attemptId)) as any[];
+        for (const row of rawRows) {
+          let parsed: any = null;
+          try {
+            parsed = JSON.parse(row?.payload_json || '{}');
+          } catch {
+            parsed = null;
           }
-        } catch (e) {
-          ctx.log.warn('自定义成绩变量解析失败，回退默认提取', { attemptId, error: String(e) });
+          if (!parsed) continue;
+          let value: number | null = null;
+          if (customFields.length) value = extractScoreFromFields(parsed, customFields);
+          if (value === null) value = toNumber(parsed.score);
+          if (value !== null) samples.push(value);
         }
+      } catch (e) {
+        ctx.log.warn('样本历史读取失败，回退单次上报分', { attemptId, error: String(e) });
       }
+      // 兜底：读不到样本历史时（例如 attempt 早于本版本），仍按本次上报分处理
+      if (!samples.length) samples = [nativeScore];
+      const finalRawScore = samples[samples.length - 1];
 
       // 4e-bis. 缺少 coursewareId 无法定位成绩配置，跳过（学生归属校验已在 4c 完成）
       if (!coursewareId) {
@@ -382,11 +399,7 @@ export default {
           ON CONFLICT(attempt_id) DO UPDATE SET score = excluded.score, submitted_at = excluded.submitted_at
         `).run(attemptId, coursewareId, studentId, finalRawScore, now);
 
-        const scoreRows = (await db.prepare(
-          `SELECT score FROM ${attemptsTable} WHERE courseware_id = ? AND student_id = ? ORDER BY submitted_at ASC`
-        ).all(coursewareId, studentId)) as any[];
-        const scores = scoreRows.map((r) => Number(r.score));
-        const aggregateRaw = aggregateScores(scores, policy);
+        const aggregateRaw = aggregateScores(samples, policy);
 
         const rawFull = Number(config.raw_full_score) || 100;
         const targetFull = Number(config.target_full_score) || 100;
@@ -670,6 +683,45 @@ ${htmlContent}
         } catch (e) {
           ctx.log.error('AI 分析成绩变量失败', { coursewareId, error: String(e) });
           return { success: false, message: `AI 分析失败: ${String(e)}`, candidates: [] };
+        }
+      },
+    });
+
+    // ── 11. 列出平台已监视到的分数变量 ──
+    // 原生 bridge-sdk 的「分数变量监视器」发现到分数变量变化时，会以 saveProgress 上报一次，
+    // host 的 courseware.submit_attempt 为每次上报写一行 submission_raw
+    // （payload_json = { score, ..., watch: { 变量名: 值, _changed, _at } }）。
+    // 这里取该课件最近一条样本的 watch 键名，供配置页做成可点选的候选变量，
+    // 教师无需手写变量名，也无需翻阅课件源码。
+    await commandBus.registerHandler('grade.list_watch_variables', {
+      async execute(command: any) {
+        const coursewareId = command?.payload?.coursewareId;
+        if (!db || !coursewareId) return { variables: [], sampledAt: null };
+        try {
+          const row = (await db.prepare(
+            `SELECT sr.payload_json AS payload_json, sr.created_at AS created_at
+               FROM submission_raw sr
+               JOIN courseware_attempt ca ON ca.id = sr.attempt_id
+              WHERE ca.courseware_id = ?
+                AND sr.payload_json LIKE '%"watch"%'
+              ORDER BY sr.created_at DESC
+              LIMIT 1`
+          ).get(coursewareId)) as any;
+          if (!row?.payload_json) return { variables: [], sampledAt: null };
+          const parsed = JSON.parse(row.payload_json);
+          const watch = parsed?.watch;
+          if (!watch || typeof watch !== 'object') return { variables: [], sampledAt: null };
+          const variables = Object.keys(watch)
+            .filter((k) => k !== '_changed' && k !== '_at')
+            .map((k) => `watch.${k}`);
+          return {
+            variables,
+            sampledAt: Number(row.created_at) || null,
+            changed: typeof watch._changed === 'string' ? watch._changed : null,
+          };
+        } catch (e) {
+          ctx.log.warn('读取平台已监视变量失败', { coursewareId, error: String(e) });
+          return { variables: [], sampledAt: null };
         }
       },
     });

@@ -112,6 +112,10 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
   }>({ open: false, candidates: [], message: '', coursewareName: '' });
   const [aiPicked, setAiPicked] = React.useState<string[]>([]);
 
+  // 平台分数变量监视器上报过的变量名（来自原生 bridge-sdk）
+  const [watchVars, setWatchVars] = React.useState<string[]>([]);
+  const [watchSampledAt, setWatchSampledAt] = React.useState<number | null>(null);
+
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   // 当前表单已配置的变量（用于候选去重与「已添加」标记）
   const existingScoreFields = parseFields(form.score_fields);
@@ -157,6 +161,33 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
     resolveLessonName(form.lesson_id);
   }, [form.lesson_id, resolveLessonName]);
 
+  // 载入该课件最近被平台监视到的分数变量
+  const loadWatchVariables = React.useCallback((coursewareId: string) => {
+    if (!coursewareId || !ctx?.invokeCommand) {
+      setWatchVars([]);
+      setWatchSampledAt(null);
+      return;
+    }
+    ctx.invokeCommand('grade.list_watch_variables', { coursewareId })
+      .then((res: any) => {
+        setWatchVars(Array.isArray(res?.variables) ? res.variables : []);
+        setWatchSampledAt(typeof res?.sampledAt === 'number' ? res.sampledAt : null);
+      })
+      .catch(() => {
+        setWatchVars([]);
+        setWatchSampledAt(null);
+      });
+  }, []);
+
+  // 点击候选变量 → 加入 / 移除 score_fields
+  const toggleScoreField = (name: string) => {
+    const merged = [...parseFields(form.score_fields)];
+    const idx = merged.indexOf(name);
+    if (idx >= 0) merged.splice(idx, 1);
+    else merged.push(name);
+    setForm((prev) => ({ ...prev, score_fields: merged.join(', ') }));
+  };
+
   // 新增配置
   const handleAdd = () => {
     setSelectedId('');
@@ -171,6 +202,7 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
     setForm({ ...DEFAULT_CONFIG, ...cfg });
     setEditing(true);
     loadCoursewares();
+    loadWatchVariables(cfg.courseware_id);
   };
 
   // 切换下拉选择（新增时）
@@ -178,6 +210,7 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
     setSelectedId(id);
     if (!id) return;
     const selected = coursewares.find((c) => c.id === id);
+    loadWatchVariables(id);
     ctx?.invokeCommand('grade.get_config', { coursewareId: id })
       .then((cfg: GradeConfig) => {
         const merged = { ...DEFAULT_CONFIG, ...(cfg || {}), courseware_id: id };
@@ -409,12 +442,51 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
               rows={2}
               value={form.score_fields}
               onChange={(e) => setForm({ ...form, score_fields: e.target.value })}
-              placeholder="留空则使用系统默认获取方式；例如：userScore, result.points, finalGrade"
+              placeholder="留空则使用系统默认获取方式；例如：watch.userScore, watch.score, watch.dom__score"
               style={{ ...inputStyle, fontFamily: 'monospace', resize: 'vertical' }}
             />
             <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
-              优先依次尝试上述变量，全部取不到时回退系统默认提取。
+              优先依次尝试上述变量，全部取不到时回退系统默认提取。变量变化时平台会自动上报样本，
+              「多次作答留分策略」对全部样本生效。
             </div>
+            {watchVars.length > 0 ? (
+              <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                <span style={{ fontSize: 11, color: '#64748b' }}>平台已监视到的变量（点击选用）：</span>
+                {watchVars.map((v) => {
+                  const active = existingScoreFields.includes(v);
+                  return (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => toggleScoreField(v)}
+                      title={active ? '点击移除' : '点击加入成绩变量'}
+                      style={{
+                        padding: '2px 8px',
+                        borderRadius: 999,
+                        fontSize: 11,
+                        cursor: 'pointer',
+                        fontFamily: 'monospace',
+                        border: active ? '1px solid #38bdf8' : '1px solid #334155',
+                        backgroundColor: active ? '#0c4a6e' : '#0f172a',
+                        color: active ? '#e0f2fe' : '#94a3b8',
+                      }}
+                    >
+                      {active ? '✓ ' : '+ '}
+                      {v}
+                    </button>
+                  );
+                })}
+                {watchSampledAt ? (
+                  <span style={{ fontSize: 10, color: '#475569' }}>
+                    最近样本 {new Date(watchSampledAt).toLocaleString()}
+                  </span>
+                ) : null}
+              </div>
+            ) : (
+              <div style={{ fontSize: 11, color: '#475569', marginTop: 4 }}>
+                尚未监视到变量：先让学生端打开一次该课件，平台会自动发现其中的分数变量并上报。
+              </div>
+            )}
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
