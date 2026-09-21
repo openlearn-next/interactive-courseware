@@ -240,8 +240,12 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
       });
       if (res?.success === false) {
         setStatus(`❌ 保存失败: ${res?.message}`);
+      } else if (res?.nativeSynced === false) {
+        setStatus('⚠️ 已保存到插件本地配置，但未能写入平台原生成绩配置（官方成绩可能仍按默认策略归集）');
+        setEditing(false);
+        loadConfigs(page);
       } else {
-        setStatus('✅ 配置已保存');
+        setStatus('✅ 配置已保存（已同步到平台原生成绩配置）');
         setEditing(false);
         loadConfigs(page);
       }
@@ -384,6 +388,11 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
         <div>
           ② <b>积分台账</b>：按 <code style={inlineCodeStyle}>归一化分 × 课程总成绩权重%</code> 累加，
           <b>只增不减</b>（重做低分不会扣回已得积分）。
+        </div>
+        <div>
+          ③ <b>平台官方成绩</b>：本配置已同步写入<b>平台原生成绩归集</b>（宿主表 <code style={inlineCodeStyle}>courseware_score_config</code>），
+          每次提交/进度上报时平台就按这里的<b>留分策略</b>（最近 / 最高 / 平均 / 首个）与满分折算刷新官方分，
+          不再需要本插件参与——所以停用本插件后官方成绩仍会按已保存的策略继续计算。
         </div>
         <div style={{ color: '#fbbf24', marginTop: 4 }}>
           ⚠️ 「课程总成绩权重」<b>不影响学期成绩册</b>，仅作用于积分台账。

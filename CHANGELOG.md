@@ -5,6 +5,21 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.31] - 2026-09-21
+
+### Changed
+- **分数变量监视器移交平台原生实现，插件不再自己注册**：平台侧由内置插件 `@openlearn/plugin-builtin` 在 `activate()` 时向「课件运行时脚本扩展点」注册同等的原生监视器（`id: score-variable-monitor`、owner `@openlearn/plugin-builtin`、`position: body-end`、`priority: 200`），因此停用或卸载本插件后，课件内依然持续采样分数变量。本插件相应移除自有脚本与注册/撤销逻辑，避免两个监视器对同一批变量重复上报样本（`MAX` 不受影响，但会污染样本条数）。
+- **成绩配置改为「平台原生优先」读写**：平台侧官方成绩已由宿主 `packages/plugins/courseware-score.ts` 按策略聚合（`courseware.submit_attempt` 与 `POST /api/courseware/attempts/:attemptId/log` 两条路径都会按策略刷新 `submission_result.score`），配置真源是宿主表 `courseware_score_config`。本插件因此对接：
+  - `grade.set_config` 在写完插件本地镜像表后**写透**到原生命令 `courseware.save_score_config`（沿用调用者 `actorId`，教师角色具备 `lesson:write`，不会被能力网关拦截），并回传 `nativeSynced`；
+  - `grade.get_config` **优先读**原生命令 `courseware.get_score_config`（`source === 'courseware'` 时采用），并把原生行回写本地镜像表，保证插件自己的成绩面板与官方口径一致；原生不可用或该课件尚未配置时回落到本地表；
+  - 配置页保存提示区分为「已同步到平台原生成绩配置」与「仅写入插件本地配置」，并在「分数去向」说明里新增第 ③ 条：官方成绩由平台按本页策略自动刷新，与本插件启用与否无关。
+
+### Removed
+- 删除 `src/score-monitor-script.ts`（监视器已归平台）；同时移除 `src/index.ts` 中与之配套的运行时脚本 Token 常量、`RuntimeScriptRegistryLike` 接口、注册句柄，以及 `activate()` 的注册段与 `deactivate()` 的撤销段。
+
+### Notes
+- 插件本地镜像表（`plugin_<id>_grade_configs`）继续保留：本插件自己的成绩面板与 `grade_attempts` / `grade_summary` 计算路径仍读它；但配置的读写均以平台原生配置为准。
+
 ## [1.0.29] - 2026-09-21
 
 ### Added

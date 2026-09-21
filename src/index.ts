@@ -29,24 +29,6 @@ const ISemesterGradeServiceToken = new Token('@openlearn/core:ISemesterGradeServ
 const POINTS_DIMENSION_ID = 'interactive_courseware';
 const SUBMIT_EVENT = 'courseware.attempt_submitted';
 
-import { SCORE_MONITOR_SCRIPT } from './score-monitor-script.js';
-
-/** 「课件运行时脚本扩展点」的 DI Token（按名字解析，避免插件 bundle 硬依赖 SDK 构建产物） */
-interface RuntimeScriptRegistryLike {
-  register(
-    owner: string,
-    script: { id: string; source: string; position?: 'head' | 'body-end'; priority?: number }
-  ): void;
-  unregister(owner: string, id: string): void;
-}
-const RUNTIME_SCRIPT_REGISTRY_TOKEN_NAME = '@openlearn/core:ICoursewareRuntimeScriptRegistry';
-const ICoursewareRuntimeScriptRegistryToken = new Token<RuntimeScriptRegistryLike>(RUNTIME_SCRIPT_REGISTRY_TOKEN_NAME);
-const SCORE_MONITOR_SCRIPT_ID = 'score-variable-monitor';
-
-// 停用插件时需要撤销注册，而 deactivate() 拿不到 ctx，故在此保留注册句柄
-let runtimeScriptRegistryRef: any = null;
-let runtimeScriptOwnerId: string | null = null;
-
 type ScorePolicy = 'MAX' | 'LATEST' | 'AVERAGE';
 
 const DEFAULT_CONFIG = {
@@ -212,7 +194,7 @@ export default {
   manifest: {
     id: 'openlearn-plugin-interactive-courseware',
     name: '互动网页课件插件',
-    version: '1.0.29',
+    version: '1.0.31',
     main: 'index.js',
     executionMode: 'inline',
     description: '接入平台原生 html-applet 课件，支持自定义成绩变量与 MAX/AVERAGE 多尝试留分，加权计入课程总成绩册与积分台账',
@@ -531,11 +513,45 @@ export default {
       },
     });
 
-    // ── 7. 读取某课件配置 ──
+    // ── 7. 读取某课件配置（优先平台原生配置：官方成绩的口径） ──
     await commandBus.registerHandler('grade.get_config', {
       async execute(command: any) {
         const coursewareId = command?.payload?.coursewareId;
         if (!db || !coursewareId) return { ...DEFAULT_CONFIG };
+        try {
+          const native: any = await callNativeCommand('courseware.get_score_config', { coursewareId }, command?.actorId);
+          if (native && native.success && native.source === 'courseware') {
+            // 让插件自己的成绩面板与官方口径保持一致：表回写镜像（best-effort）
+            try {
+              await upsertLocalConfig({
+                coursewareId,
+                coursewareName: native.courseware_name,
+                rawFullScore: Number(native.raw_full_score),
+                targetFullScore: Number(native.target_full_score),
+                weightPercentage: Number(native.weight_percentage),
+                scorePolicy: native.score_policy,
+                scoreFields: native.score_fields,
+                lessonId: native.lesson_id,
+              });
+            } catch (e) {
+              ctx.log.warn('回写原生配置到插件镜像表失败', { coursewareId, error: String(e) });
+            }
+            return {
+              courseware_id: native.courseware_id,
+              courseware_name: native.courseware_name,
+              raw_full_score: native.raw_full_score,
+              target_full_score: native.target_full_score,
+              weight_percentage: native.weight_percentage,
+              score_policy: native.score_policy,
+              score_fields: native.score_fields,
+              lesson_id: native.lesson_id,
+              updated_at: native.updated_at,
+              native: true,
+            };
+          }
+        } catch (e) {
+          ctx.log.warn('读取平台原生成绩配置失败，回落到插件本地镜像表', { coursewareId, error: String(e) });
+        }
         const row = (await db.prepare(`SELECT * FROM ${configsTable} WHERE courseware_id = ?`).get(coursewareId)) as any;
         if (!row) return { ...DEFAULT_CONFIG, courseware_id: coursewareId };
         return row;
@@ -556,31 +572,48 @@ export default {
         const scorePolicy: ScorePolicy = ['MAX', 'LATEST', 'AVERAGE'].includes(p?.scorePolicy) ? p.scorePolicy : 'LATEST';
         const scoreFields = typeof p?.scoreFields === 'string' ? p.scoreFields : '';
         const lessonId = p?.lessonId || '';
-        const now = Date.now();
 
         try {
-          await db.prepare(`
-            INSERT INTO ${configsTable}
-              (courseware_id, courseware_name, raw_full_score, target_full_score, weight_percentage, score_policy, score_fields, lesson_id, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(courseware_id) DO UPDATE SET
-              courseware_name = excluded.courseware_name,
-              raw_full_score = excluded.raw_full_score,
-              target_full_score = excluded.target_full_score,
-              weight_percentage = excluded.weight_percentage,
-              score_policy = excluded.score_policy,
-              score_fields = excluded.score_fields,
-              lesson_id = excluded.lesson_id,
-              updated_at = excluded.updated_at
-          `).run(
-            coursewareId, coursewareName, rawFullScore, targetFullScore,
-            weightPercentage, scorePolicy, scoreFields, lessonId, now,
-          );
-          return { success: true };
+          await upsertLocalConfig({
+            coursewareId,
+            coursewareName,
+            rawFullScore,
+            targetFullScore,
+            weightPercentage,
+            scorePolicy,
+            scoreFields,
+            lessonId,
+          });
         } catch (e) {
           ctx.log.error('保存课件成绩配置失败', { coursewareId, error: String(e) });
           return { success: false, message: String(e) };
         }
+
+        // 写透到平台原生配置：官方成绩由宿主按该配置聚合（失败不影响本地保存，仅回传原因）
+        let nativeSynced = false;
+        let nativeError = '';
+        try {
+          const native: any = await callNativeCommand(
+            'courseware.save_score_config',
+            {
+              coursewareId,
+              coursewareName,
+              scorePolicy,
+              scoreFields,
+              rawFullScore,
+              targetFullScore,
+              weightPercentage,
+              lessonId: lessonId || undefined,
+            },
+            command?.actorId,
+          );
+          nativeSynced = !!(native && native.success);
+        } catch (e) {
+          nativeError = String(e);
+          ctx.log.warn('写透到平台原生成绩配置失败（插件本地配置已保存）', { coursewareId, error: nativeError });
+        }
+
+        return { success: true, nativeSynced, nativeError: nativeSynced ? '' : nativeError };
       },
     });
 
@@ -744,31 +777,56 @@ ${htmlContent}
       },
     });
 
-    // ── 6. 通过「课件运行时脚本扩展点」注册分数变量监视器 ──
-    // 课件 iframe 是 credentialless + 无 allow-same-origin 的 opaque origin，父窗口读不到它内部的变量，
-    // 服务端拼接 HTML（injectLmsSdk）是平台唯一能向课件投递代码的位置 —— 所以监视器脚本必须由平台代注入。
-    // 用字符串 token 解析（而非从 '@openlearn/plugin-sdk' 导入 Token 值），
-    // 这样插件 bundle 不依赖宿主 SDK 构建产物是否已包含该 Token，部署顺序更安全。
-    try {
-      const registry = await ctx.resolve(ICoursewareRuntimeScriptRegistryToken);
-      if (registry && typeof registry.register === 'function') {
-        registry.register(ctx.pluginId, {
-          id: SCORE_MONITOR_SCRIPT_ID,
-          source: SCORE_MONITOR_SCRIPT,
-          position: 'body-end',
-          priority: 200,
-        });
-        runtimeScriptRegistryRef = registry;
-        runtimeScriptOwnerId = ctx.pluginId;
-        ctx.log.info('已注册课件运行时分数变量监视器', { id: SCORE_MONITOR_SCRIPT_ID });
-      } else {
-        ctx.log.warn('课件运行时脚本扩展点不可用，分数变量监视器未注册（成绩仍可按原生提交归集）', {
-          token: RUNTIME_SCRIPT_REGISTRY_TOKEN_NAME,
-        });
-      }
-    } catch (e) {
-      ctx.log.warn('课件运行时脚本扩展点解析失败，分数变量监视器未注册', { error: String(e) });
-    }
+    // ── 6. 平台原生成绩归集配置的读写通道 ──
+    // 阶段 C 之后，**官方成绩由宿主按策略聚合**（`packages/plugins/courseware-score.ts` +
+    // `courseware.submit_attempt` / `/api/courseware/attempts/:id/log`），配置真源是宿主表
+    // `courseware_score_config`。本插件保留自己的镜像表（供自己的成绩面板与兼容读），
+    // 但配置**读写都优先走平台原生命令**，否则教师在插件里改的策略不会作用到官方成绩。
+    // 说明：监视器脚本（分数变量采集）已由平台内置插件 @openlearn/plugin-builtin 注册到
+    // 「课件运行时脚本扩展点」，本插件不再自己注册（避免双份上报）。
+    const callNativeCommand = async (type: string, payload: any, actorId?: string) => {
+      const bus: any = ctx.services?.commandBus;
+      if (!bus || typeof bus.createCommand !== 'function' || typeof bus.execute !== 'function') return null;
+      const envelope = await bus.createCommand(type, payload, actorId || ctx.pluginId);
+      return await bus.execute(envelope);
+    };
+
+    const upsertLocalConfig = async (input: {
+      coursewareId: string;
+      coursewareName?: string;
+      rawFullScore?: number;
+      targetFullScore?: number;
+      weightPercentage?: number;
+      scorePolicy?: ScorePolicy;
+      scoreFields?: string;
+      lessonId?: string;
+    }) => {
+      if (!db) return;
+      await db.prepare(`
+        INSERT INTO ${configsTable}
+          (courseware_id, courseware_name, raw_full_score, target_full_score, weight_percentage, score_policy, score_fields, lesson_id, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(courseware_id) DO UPDATE SET
+          courseware_name = excluded.courseware_name,
+          raw_full_score = excluded.raw_full_score,
+          target_full_score = excluded.target_full_score,
+          weight_percentage = excluded.weight_percentage,
+          score_policy = excluded.score_policy,
+          score_fields = excluded.score_fields,
+          lesson_id = excluded.lesson_id,
+          updated_at = excluded.updated_at
+      `).run(
+        input.coursewareId,
+        input.coursewareName || '',
+        Number(input.rawFullScore ?? 100),
+        Number(input.targetFullScore ?? 100),
+        Number(input.weightPercentage ?? 10),
+        input.scorePolicy || 'LATEST',
+        input.scoreFields || '',
+        input.lessonId || '',
+        Date.now(),
+      );
+    };
 
     ctx.log.info('互动网页课件插件激活成功（订阅原生提交 + 多尝试留分聚合）', {
       configsTable, attemptsTable, summaryTable, submitEvent: SUBMIT_EVENT,
@@ -776,16 +834,7 @@ ${htmlContent}
   },
 
   async deactivate() {
-    // 撤销「课件运行时脚本扩展点」注册，避免停用插件后监视器仍在注入
-    try {
-      if (runtimeScriptRegistryRef && runtimeScriptOwnerId) {
-        runtimeScriptRegistryRef.unregister(runtimeScriptOwnerId, SCORE_MONITOR_SCRIPT_ID);
-      }
-    } catch (e) {
-      // 内核可能已销毁，忽略
-    }
-    runtimeScriptRegistryRef = null;
-    runtimeScriptOwnerId = null;
+    // 配置（原生）与成绩聚合均由宿主持有；本插件不再注册运行时脚本，故无需撤销。
     // ctx.db.dropAllTables() 由 PluginHost 自动调用
   },
 };
