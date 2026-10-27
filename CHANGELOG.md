@@ -5,6 +5,11 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.32] - 2026-10-27
+
+### Fixed
+- **manifest 补声明 `student-data:write` 能力**：宿主平台对 `IPointsLedgerService.addPoints` 施加 `student-data:write` 能力门禁，缺失时抛 `PluginCapabilityDeniedError`。本插件的积分入账（按成绩变量加权给分）依赖 `addPoints`，但 capabilitiesProposed 只有 `courseware:*`，在新宿主上积分入账会被拒绝（调用处有 `typeof addPoints === 'function'` 判断但无法捕获能力拒绝，表现为静默丢分）。补声明后需管理员在审批 UI 确认授予。
+
 ## [1.0.31] - 2026-09-21
 
 ### Changed

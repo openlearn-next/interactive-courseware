@@ -194,7 +194,7 @@ export default {
   manifest: {
     id: 'openlearn-plugin-interactive-courseware',
     name: '互动网页课件插件',
-    version: '1.0.31',
+    version: '1.0.32',
     main: 'index.js',
     executionMode: 'inline',
     description: '接入平台原生 html-applet 课件，支持自定义成绩变量与 MAX/AVERAGE 多尝试留分，加权计入课程总成绩册与积分台账',
@@ -212,6 +212,7 @@ export default {
       'courseware:read',
       'courseware:write',
       'courseware:grade',
+      'student-data:write',
     ],
   },
 
