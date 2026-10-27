@@ -6,7 +6,30 @@
  *   - 编辑表单含「成绩变量」输入框（可空=默认提取；多变量优先提取）
  */
 
-import React from 'react';
+import type * as ReactTypes from 'react';
+
+declare const window: any;
+
+function resolveReact(): typeof ReactTypes {
+  return (
+    (globalThis as any).React ||
+    (typeof window !== 'undefined' &&
+      (window.HostSharedDeps?.React?.default ??
+        window.HostSharedDeps?.React ??
+        window.React ??
+        window.HostSharedDeps?.react))
+  );
+}
+
+const React: typeof ReactTypes = new Proxy({} as any, {
+  get(_target, prop) {
+    const r = resolveReact();
+    if (!r) {
+      throw new Error('[InteractiveCourseware] React 尚未由宿主注入，请确保宿主环境已挂载 HostSharedDeps.React');
+    }
+    return (r as any)[prop];
+  },
+});
 
 let ctx: any = null;
 
@@ -684,6 +707,7 @@ function CoursewareGradePanel(props: { renderType?: string; lessonId?: string | 
 export async function activate(hostCtx: any) {
   ctx = hostCtx;
   try {
+    // 1. 注册教师主导航标签页（左侧边栏扩展导航）
     hostCtx.ui.registerExtensionPoint('teacher.tab', {
       id: 'tab_interactive_courseware_grade',
       label: '互动网页课件',
@@ -692,8 +716,46 @@ export async function activate(hostCtx: any) {
       renderType: 'panel',
       component: CoursewareGradePanel,
     });
+
+    // 2. 注册备课组件画板（LessonPalette）图元（命令式注册备用通道）
+    if (typeof hostCtx.ui?.registerPaletteItem === 'function') {
+      hostCtx.ui.registerPaletteItem({
+        type: 'openlearn-plugin-interactive-courseware/interactive-board',
+        labelZh: '互动网页课件',
+        labelEn: 'Interactive Courseware',
+        descriptionZh: '在备课画板中插入互动课件与成绩留分配置图元',
+        descriptionEn: 'Insert interactive courseware with grading rules',
+        color: 'indigo',
+        group: 'media',
+        icon: 'FileCheck',
+        defaultData: {
+          title: '互动网页课件任务',
+          scorePolicy: 'LATEST',
+          rawFullScore: 100,
+          targetFullScore: 100,
+          weightPercentage: 10,
+        },
+      });
+    }
+
+    // 3. 注册快捷命令面板（Ctrl+K）
+    if (typeof hostCtx.ui?.registerExtensionPoint === 'function') {
+      const pid = hostCtx.pluginId || 'openlearn-plugin-interactive-courseware';
+      await hostCtx.ui.registerExtensionPoint('command_palette.item', {
+        id: 'courseware-grade-list',
+        label: '互动课件：查看成绩规则',
+        icon: 'FileCheck',
+        slotProps: {
+          title: '互动课件：查看成绩规则',
+          description: '查看互动课件成绩留分策略与折算配置',
+          category: 'Plugin',
+          commandType: `${pid}.grade.list_configs`,
+          payload: { lessonId: '$lessonId' },
+        },
+      });
+    }
   } catch (e) {
-    console.warn('[InteractiveCourseware] 注册 teacher.tab 失败:', e);
+    console.warn('[InteractiveCourseware] 注册扩展点失败:', e);
   }
 }
 
@@ -701,6 +763,10 @@ export function deactivate() {
   if (ctx?.ui) {
     try {
       ctx.ui.unregisterExtensionPoint('teacher.tab', 'tab_interactive_courseware_grade');
+      ctx.ui.unregisterExtensionPoint('command_palette.item', 'courseware-grade-list');
+      if (typeof ctx.ui?.unregisterPaletteItem === 'function') {
+        ctx.ui.unregisterPaletteItem('openlearn-plugin-interactive-courseware/interactive-board');
+      }
     } catch (e) {}
   }
 }

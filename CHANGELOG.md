@@ -5,6 +5,28 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.34] - 2026-10-27
+
+### Added
+- **接入备课组件画板（LessonPalette）**：在 `manifest.contributes["editor.palette_item"]` 中注册「互动网页课件」图元，支持教师在备课时拖拽/插入互动课件任务图元，配置题目、留分策略与折算满分及权重。
+
+### Fixed
+- **解决教师端左侧导航空白页问题**：
+  - 根因排查与打通：此前声明的 `teacher.tab` 由宿主预置 `NullExtensionComponent` 占位，沙箱远程隔离导致函数无法跨 `postMessage` 传递。
+  - 修复：接入宿主 Trusted Inline 执行机制，支持将 `CoursewareGradePanel` 作为真正的 React 组件注册到宿主主上下文，并在未注入时提供动态安全代理兜底。
+  - 增强 `command_palette.item` 命令全限定名拼接（`${pluginId}.grade.list_configs`）。
+
+## [1.0.33] - 2026-10-27
+
+### Changed
+- **全面对齐 OpenLearn v0.7.6 / SDK 3.7.4 规范并恢复 Trusted Inline 全功能面板**：
+  - **恢复教师左侧主导航与配置面板**：保留原有 700 行可视化成绩管理面板（`CoursewareGradePanel`），在 `activate()` 中重新挂载 `teacher.tab`（并补齐 `command_palette.item` 与 `classroomTools`）。
+  - **HostSharedDeps 兼容与 CLI 裸导入守卫放行**：通过 `HostSharedDeps.React` 动态解析避免打包时生成裸模块说明符，完美通过 SDK 3.7.4 `assertFrontendHasNoBareSpecifiers` 编译防御。
+  - **ActionRegistry 全量对齐**：为插件全部 8 个命令注册 ActionDescriptor（`grade.list_courseware`, `grade.get_lesson`, `grade.list_configs`, `grade.get_config`, `grade.set_config`, `grade.delete_config`, `grade.analyze_score_fields`, `grade.list_watch_variables`），消除内核 default-deny 下的 `COMMAND_NOT_REGISTERED`（403）阻断。
+  - **真实权限映射**：纠正废弃权限 `courseware:*` 与 `student-data:write`，规范为平台封闭 RBAC 权限集合（`lesson:read`, `lesson:write`, `management:read`, `management:write`, `student:write`）。
+  - **Manifest 与依赖规范**：更新 `engines.openlearn: ">=0.7.0"`，显式声明 `executionMode: "inline"` 与 `contributes["teacher.tab"]`，补全 `requires: @openlearn/core:IActionRegistryService@^1.0.0`。
+  - **依赖现代化**：升级 `@openlearn/plugin-sdk` 至 `^3.7.4`，清理 express/jszip 等无用开发依赖。
+
 ## [1.0.32] - 2026-10-27
 
 ### Fixed
